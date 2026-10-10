@@ -1223,6 +1223,17 @@ try {
           expression: expr, ...(contextId ? { contextId } : {}), returnByValue: true, awaitPromise: true,
         });
         if (r && r.error) return { dead: true, why: r.error.message || String(r.error.code) };
+        // F1 (guest feedback 2026-10-11): an expression that does not COMPILE (top-level await,
+        // a typo) arrives as exceptionDetails with value undefined. Polling treated it as
+        // "not true yet" and silently burned the whole waitTimeout for a predicate that can never
+        // become true (measured: 30 s + a wrong "flaky network" hypothesis). A dead predicate
+        // must fail the wait at once.
+        // NOTE on shape: the transport resolves Runtime.evaluate with `m.result ?? m`, so the
+        // response here is {result: RemoteObject, exceptionDetails} - exceptionDetails is at the
+        // TOP level, not inside .result (verified against live CDP: SyntaxError arrives as
+        // {result:{subtype:"error"...}, exceptionDetails:{...}}).
+        const ex = r?.exceptionDetails;
+        if (ex) return { dead: true, why: `predicate threw: ${ex.exception?.description || ex.text}`, threw: true };
         return { value: r?.result?.value };
       };
       const pollUntil = async (session, contextId, expr, timeout, quiet = false) => {
@@ -1242,6 +1253,15 @@ try {
             fellBack = true;
             res = await pollOnce(session, expr, null)
               .catch((e) => ({ dead: true, why: String((e && e.message) || e) }));
+          }
+          // F1: a predicate that THREW (does not compile / raises every tick) can never become
+          // true - stop polling and fail loudly with the reason, do not burn the timeout.
+          // A mere protocol `error` may be transient (context switch), so only `threw` aborts.
+          if (res.threw) {
+            console.log(`  wait: FAILED at once - ${res.why}`
+              + (/await/.test(expr) && !/async/.test(expr) ? ` (top-level await? wrap the predicate in (async () => …)())` : ""));
+            process.exitCode = 1;
+            return false;
           }
           if (res.value) { ok = true; break; }
           await sleep(300);

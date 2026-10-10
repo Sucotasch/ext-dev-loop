@@ -1,8 +1,6 @@
 ---
 name: ext-dev-loop
 description: Use when developing a browser extension.
-version: 1.0.0
-license: MIT
 ---
 
 # ext-dev-loop
@@ -39,9 +37,9 @@ and as the way to check the guards.
 
 - 2026-09-19, Edge 153.0.4234.32, Windows, this project's extension: the unpacked
   extension loads with `--load-extension`, and the SW is found by evaluating
-  `chrome.runtime.getManifest().name` per service_worker target — among ~17 unrelated
-  `msedge.exe` processes and several component-extension SWs (a real project, its real name
-  and version in the answer).
+  `chrome.runtime.getManifest().name` per service_worker target ("SunoGrab - Suno
+  Audio Downloader", v3.0.0) — among ~17 unrelated `msedge.exe` processes and several
+  component-extension SWs.
 - Chrome ≥137 is refused up front (Chrome 141 here): it ignores `--load-extension`.
   `--allow-chrome` overrides knowingly. The preferred host changed to **Chrome for Testing 137**
   after an Edge 154 update silently broke unpacked-extension loading — see fact 1.
@@ -54,7 +52,7 @@ and as the way to check the guards.
 - `/json/new?<url>` opens **both** a site page and an extension page:
   `chrome-extension://<id>/options.html` (HTTP 200, target created, and the page really
   rendered — title plus its 5 format radios). `Target.createTarget` was not needed.
-- **A content script lives in an isolated world, and it is reachable.** On a real site the
+- **A content script lives in an isolated world, and it is reachable.** On suno.com the
   page target exposed, next to several default contexts, one with
   `auxData.isDefault === false`, `type=isolated`, `origin=chrome-extension://<id>` and
   `name` = the extension's name. In THAT context `chrome.runtime.id` and the manifest's
@@ -81,7 +79,7 @@ and as the way to check the guards.
   URL in scripts once you have seen the id once.
 - **A scratch profile is not an empty profile.** Edge installs registry/managed
   extensions into it (measured: a third-party security extension's content script was
-  running on a real site in a profile that had never seen a human, and its stderr noise
+  running on suno.com in a profile that had never seen a human, and its stderr noise
   `external_registry_loader_win.cc` appears on every launch). Consequences: identify the
   SW by manifest name, and pick the isolated world by YOUR extension's id — "the first
   non-default context" can be somebody else's. `probe.mjs --in isolated` does that, and
@@ -89,7 +87,7 @@ and as the way to check the guards.
 - A single-page app may render nothing 2.5 s in. `--delay <ms>` waits longer before the
   `--eval`/`--shot` step (measured need: an SPA's own content, not the extension's).
 - **A content script (or page) cannot construct a Worker from `chrome-extension://`.**
-  Measured on a real site with a WAR-declared worker: `new Worker(extUrl)` and
+  Measured on suno.com with a WAR-declared worker: `new Worker(extUrl)` and
   `new Worker(extUrl, {type:"module"})` both throw `cannot be accessed from origin` — the
   worker same-origin rule, which no `web_accessible_resources` entry lifts. But
   `fetch(extUrl)` of the same WAR file returns **200**, and
@@ -105,7 +103,7 @@ and as the way to check the guards.
   isolated worlds: match your extension's id, because a scratch profile can contain other
   extensions' worlds.
 - `tasklist` works from node (703 ms) but Git Bash mangles `/FI` into `//FI`; and
-  `wmic process get CommandLine` returns the hostname without elevation. So a stray
+  `wmic process get CommandLine` returns BLACKBOX without elevation. So a stray
   window CANNOT be identified after the fact — prevent it, or close it through the
   debug port you own.
 - **A page whose module fails to PARSE has no handlers at all — and it looks like a
@@ -123,7 +121,7 @@ and as the way to check the guards.
   (needs `--experimental-vm-modules`, so run it in a child process) and classic scripts
   with `vm.Script`. If the loop caches a page from a previous run, remember the extension
   must be reloaded for edits to take effect.
-- 2026-09, a real MV3 extension first-install in Edge: first-install events captured
+- 2026-09, Imagus Reborn MD first-install in Edge: first-install events captured
   (`onInstalled reason install`, `userScripts` warning, remote filter update,
   upstream drift warning); `chrome.runtime.reload()` from inside the SW re-attaches
   to a fresh SW with boot logs from t≈0; real pages opened via `/json/new`.
@@ -293,7 +291,7 @@ The same rule decides how a HUMAN HANDOVER has to be shaped — a window that mu
 open for a person is a browser that outlives the run; see the human-in-the-loop
 section below before reaching for `--ask-keep`.
 
-`--eval` opens `--url` (default: `--open`, else `about:blank`), lists the page's execution
+`--eval` opens `--url` (default: `--open`, else suno.com), lists the page's execution
 contexts, evaluates your expression in the world you asked for and prints the value —
 the only way to see what a content script sees. `--shot` takes a PNG of the same page
 into `./.ext-dev-loop/shots/` (or a path you give), which is how a UI judged by eye
@@ -349,7 +347,7 @@ Where an expression runs is now a choice:
 | `ext` | the extension's own page (path taken from the manifest, never guessed) | driving: `chrome.runtime.sendMessage()` from here reaches the worker |
 
 `--msg` is the difference between watching and testing: `{cmd:"getDownloadLog"}`,
-`{cmd:"downloadAll"}`, `{cmd:"getDownloadStatus"}` - measured on a real MV3 extension
+`{cmd:"downloadAll"}`, `{cmd:"getDownloadStatus"}` - measured on Imagus Reborn MD
 (Edge 153, headless): the answer came back as the extension's own JSON, e.g.
 `{"stats":{...},"worker":{"gen":1,...},"pending":{"filtering":0,...},"phase":"none"}`.
 That is the same data a human would have copied out of a diagnostics file by hand.
@@ -362,7 +360,7 @@ therefore read from the manifest (or asked of the worker when attaching).
 `--script <file>` takes a JSON array of steps; each step is
 `{ note?, target?: page|sw|ext, url?, in?: main|isolated, eval?, msg?, wait?,
 waitTimeout?, delay?, shot? }` and is executed in order, printing `[step i/N]` plus
-the result. A real 6-step run against a live extension asked the worker for its
+the result. A real 6-step run against Imagus Reborn MD asked the worker for its
 module state, its action title and a `chrome.storage.session` key, called
 `sieveUrlFor()` inside the worker, then opened the extension's own options page,
 read the warning banner out of its DOM, and sent `{cmd:"getDownloadStatus"}` - all in
@@ -486,7 +484,7 @@ node <skill-dir>/scripts/doctor.mjs --ext <ff-ext-dir> --live      # routes to t
 
 | Can | Cannot (and the measurement) |
 |---|---|
-| install the unpacked tree as a **temporary add-on** (`webExtension.install`, a PATH; returns the gecko id, e.g. `my-extension@developer`) | be evaluated from inside: `script.getRealms` on an extension context answers *"does not support browsing contexts in privileged scope"*, and without `-remote-allow-system-access` it answers *"System access is required"* — both were tried. So `--target sw\|ext`, `--msg` and `--in isolated` are refused up front with that reason |
+| install the unpacked tree as a **temporary add-on** (`webExtension.install`, a PATH; returns the gecko id, e.g. `imagus-reborn-md@sucotasch`) | be evaluated from inside: `script.getRealms` on an extension context answers *"does not support browsing contexts in privileged scope"*, and without `-remote-allow-system-access` it answers *"System access is required"* — both were tried. So `--target sw\|ext`, `--msg` and `--in isolated` are refused up front with that reason |
 | open/navigate real pages and evaluate in a page's realm | reach the content-script world: content scripts are not browsing contexts, and the extension's own world needs the userScripts grant — a browser UI action here |
 | capture a page's console (`log.entryAdded`, verified with our own `console.log` round-trip) | keep a browser for a later run: a BiDi session belongs to this socket, so `--keep`/`--attach` are refused rather than faked (batch with `--script` instead) |
 | take screenshots (`browsingContext.captureScreenshot` → PNG) |
@@ -528,7 +526,7 @@ Facts worth keeping:
 4. Edit the extension, then reload: `--reload` (or `Runtime.evaluate
    chrome.runtime.reload()`), poll for the NEW SW id, re-attach, read boot logs.
    **A reload is not optional after editing a file the worker reaches through
-   `importScripts()` (measured 2026-09-21, on a real MV3 extension): the browser serves those
+   `importScripts()` (measured 2026-09-21, Imagus mass-download): the browser serves those
    sub-scripts from the script cache until the extension itself is reloaded or its version
    changes, so a fresh probe run happily executes the OLD code and answers about it — the
    tell is `ReferenceError: <fn> is not defined` for a function you can see on disk, plus an
@@ -574,7 +572,7 @@ Facts worth keeping:
 - Whether a content script's console output can be filtered reliably by
   `executionContextId` in a page with several default contexts (one isolated log did map
   correctly, but the id you evaluate with is not always the id reported).
-- Reload through `chrome.runtime.reload()` on a **module** service worker — one real
+- Reload through `chrome.runtime.reload()` on a **module** service worker — the Imagus
   measurement was on a classic SW; this project's SW is `type: module`.
 - Whether Chrome/Edge keeps the per-extension **Allow User Scripts** toggle ON across a
   browser restart. Measured here with a FRESH scratch profile: the API is `undefined`
@@ -582,6 +580,29 @@ Facts worth keeping:
   CDP cannot flip it — `chrome://extensions` is not attachable. The persistence question
   needs one manual click in a visible scratch window, then a relaunch with the same
   `--profile` and the same `--target sw --eval '!!chrome.userScripts'` probe.
+
+## Fresh-profile races (measured 2026-10-11, guest run)
+
+On a brand-new profile the extension's own cold-start (onInstalled, storage seeding) RUNS
+CONCURRENTLY with your first steps for ~2 s: a step that writes to chrome.storage and reads
+back gets the extension's OWN values over yours. It looks like "my test did not work" - the test
+was fine. Put a settle step first (`target:"sw"`, eval the extension's own ready/load call, then
+`setTimeout 1500`), and the runs become deterministic. The worker console printed per-step can
+also mix startup lines into a step's window - read it with that in mind (or add the settle).
+
+## E2E with downloads, offline (recipe, measured 2026-10-11)
+
+1. Local fixture: `python -m http.server 9811` in a dir with index.html + real images
+   (>= 50x50 px - many products filter tiny icons out as a backstop, and 1x1 stubs then
+   "prove" a false defect). Open with `{"target":"page","url":"http://127.0.0.1:9811/index.html","delay":2500}`.
+2. A popup opened by the probe is a TAB, not a popup over a page: a product that operates on
+   `chrome.tabs.query({active:true,currentWindow:true})` will see the popup tab as active and
+   consider its own result stale. Activate the TARGET tab first, from a `target:"sw"` step:
+   `(async () => { const t = (await chrome.tabs.query({})).find(x => x.url.includes("127.0.0.1:9811")); await chrome.tabs.update(t.id, {active:true}); })()`.
+3. Click the product's real button from `target:"ext"`, then check the FILES in
+   `.ext-dev-loop/downloads` - more reliable than `chrome.downloads.search` and needs no `wait`.
+4. Read the product's own state (`chrome.storage.local.get(...)`) from a `target:"sw"` step -
+   the same data the popup shows.
 
 ## First-install specifics (gated permissions)
 
@@ -600,17 +621,165 @@ Facts worth keeping:
 - Never paste passwords into the chat — log in by hand in the scratch window.
 - `chrome://` pages: read state through the extension's own APIs or rendered text; do
   not automate the settings UI.
+## 2026-10-07 — measured: the grant is per-profile, and four defects this tool had
+
+- **`--headless=new` is not a safe spelling.** On Edge 154 it produced a VISIBLE window that stole
+  the user's focus (they saw it and reported it). Plain `--headless` is the supported spelling since
+  Chrome 132. The probe now passes that **and proves it took effect**: it reads `screen`/`outer` from
+  a page and reports `HEADLESS confirmed` (headless synthesises the screen - measured `screen
+  [800,600]` with `outer [1100,820]` = `--window-size`) or warns that a real monitor is being
+  reported. Never claim headless from the command line; claim it from this line.
+- **The grant check cannot be a live read.** Per the docs the API stays `undefined` in an
+  already-running worker until its script context reloads, so the probe polls by reloading the
+  extension and re-checking in the FRESH worker. Two traps, both hit: awaiting the CDP response to
+  `chrome.runtime.reload()` never returns (it kills the worker that would answer) and it left an
+  ORPHAN browser behind; and the error path never called `process.exit()`, so a finished run hung
+  until the 360 s hard timeout. Fixed: bounded race around the reload, and an explicit exit.
+- **`show()` crashed on an undefined eval result** (`JSON.stringify(undefined).slice`), which masked
+  the very state the step existed to print. Fixed.
+- **The grant is per profile, not per run.** "Allow User Scripts" is stored in the scratch profile,
+  so a profile that keeps the setting needs the click ONCE - the probe now opens the exact details
+  page and resumes the same run when it appears. Keep the profile; do not delete it to "clean up".
+- Reminder for the agent: a visible window is a real cost to the person at the machine. Prefer
+  `--headless`; when a human is needed (the grant, a login, a challenge), say exactly what to click
+  and wait - do not hand them a list of steps to report back.
+## 2026-10-07 (2) — the worker is IDLE on later launches, and a 20s budget hid it
+
+Two findings from the same afternoon, both about the launch handshake:
+
+- **The service-worker wait budget was a hard 100 x 200ms = 20s.** A slow (or merely
+  non-headless) start registers its worker after that, and the run died with
+  `extension SW not found - extension failed to load?` although the extension was healthy.
+  Now `--sw-timeout` (default 60s), and the failure prints how long it waited.
+- **Leading hypothesis for the flakiness, with the evidence that makes it a hypothesis and not
+  a fact:** an MV3 worker is only listed by `/json/list` while it is RUNNING, and it is
+  event-driven. On this machine the extension's worker was found on the FIRST launch into a
+  profile (`onInstalled reason: install` in the console stream, i.e. a real startup event) and
+  then NOT found on three later launches into the SAME profile with a 90s budget - consistent
+  with "nothing woke the idle worker". What would settle it: after launch, open an
+  extension-owned page (which makes the extension talk to its own worker) and re-poll. Until
+  that is measured, treat "extension SW not found" as "the worker is asleep", not as
+  "the extension is broken".
+- Consequence for the human-in-the-loop steps (the userScripts grant, a login): do not open a
+  window for the owner and then fail before the run can even see the extension. Get the
+  handshake solid first, then ask for the ONE click.
+## 2026-10-08 — `mouse`: an extension can be dead UNTIL the pointer moves
+
+Measured (Chrome for Testing 137, `--headless`, a clean scratch profile): an extension was written
+off as broken for a whole session - `chrome.tabs.sendMessage` answering "Receiving end does not
+exist" and Ctrl+Q doing nothing - while the truth was that its content script arms only
+`window.addEventListener("mousemove", ...)` at load and wires its `chrome.runtime.onMessage`
+listener AND its hotkeys from the FIRST pointer move. Nothing was wrong with the browser, the
+userScripts grant, or the extension.
+
+The probe now has a `mouse` step:
+
+    { "target": "page", "url": "<page>", "mouse": true, "mouseAt": "img" }
+
+It dispatches two real `Input.dispatchMouseEvent` `mouseMoved`s (a DELTA is what some listeners
+want), centred on `mouseAt` or at explicit `x`/`y`.
+
+Rules this buys:
+- Before concluding "the extension does not respond", ask whether the page has ever SEEN the user
+  act. Put a `mouse` step before any `key`/message step that expects the content script to be live.
+- Do not use `cfg`/`PVI` (or any IIFE-local, or declared-but-unset binding) as an execution marker
+  from an evaluate: `typeof` reads "undefined" either way. Use a top-level `const`/`function` the
+  script really defines (here: `Port`), or a registered probe script that leaves a marker.
+- "Receiving end does not exist" is a statement about LISTENERS, not about injection. Prove the
+  pipeline separately: `userScripts.getScripts()` + `userScripts.execute()` + a registered marker
+  script.
+## 2026-10-08 (2) — the script runner now READS the console (page + worker)
+
+`--watch` could stream consoles, but it cannot be combined with `--script`, and the script runner
+— which is how a whole scenario is driven in ONE invocation — enabled `Runtime` on every page and
+then threw away what arrived. That is exactly how a content script failing silently during its own
+init reads as "the extension does nothing".
+
+Now every PAGE step drains the page's console, attributed per world (e.g.
+`[<page> isolated#3] [error] ...`), and every WORKER step drains the service worker's. Two details
+that had to be got right, both found by measurement:
+
+- `Runtime.enable` REPLAYS its console buffer to each NEW session, and every step attaches its own
+  session — so the same line arrived once per later step. The runner now dedupes within a run and
+  prints `(N replayed line(s) suppressed ...)` rather than hiding anything.
+- an execution context id is NOT in the same place for every event: `Runtime.consoleAPICalled`
+  carries it at params level, `Runtime.exceptionThrown` only inside `params.exceptionDetails`.
+  Reading the wrong one printed `ctx undefined` for every exception.
+
+Evidence that it works (`.unlazy/console-check.json`, CfT 137 headless): a step that logs is drained
+in that SAME step; a following step reports only its own new line, with an uncaught async error
+shown as `[about:blank main#1] [EXC] Error: MARK-UNCAUGHT`.
+
+One more thing the same session forced: **downloads now go to the lab, not to the human.** Three probe
+runs left 54 lab PNGs in the owner's real download folder (`D:\Arx`) because the lab script redirected
+downloads with `Browser.setDownloadBehavior` and the reusable tool did not. The tool now does it for
+every launch, into `.ext-dev-loop/downloads`. The gotcha, measured three times: the behaviour is tied
+to the CDP session that set it - set it and close that session and the log still says "redirected"
+while the files go to the real folder. Keep the session open for the whole run.
+Also: it must be set AFTER the endpoint answers (a call right after spawn dies with `fetch failed`),
+and `chrome.downloads` downloads DO honour it once those two conditions hold (18 files in the scratch
+dir, 0 in the owner's, same run).
+
+## 2026-10-09 — lab hygiene: a closed browser is not a dead process, and ports are reserved
+
+- **CDP `Browser.close` does not reliably end the PROCESS.** Measured 2026-10-09: a lingering process
+  keeps the profile's singleton, so the next launch with the same `--user-data-dir` hands its URL to
+  that existing process and exits — no window of your own, and the run talks to yesterday's browser.
+  Kill an orphan **through its own endpoint** (endpoint-addressed means it can never touch a browser
+  that was not started with `--remote-debugging-port` — e.g. the owner's own Chrome), then relaunch.
+  `scripts/ports.mjs` is the sweep — note it **CLOSES every lab port it finds**, through each port's
+  own endpoint; it is not a status query. To only ASK which lab browsers are alive, fetch
+  `http://127.0.0.1:<port>/json/version` on 9793-9831 and nothing else. The Imagus project learned
+  this the hard way: running the sweep as a question closed the window the owner was using. Its
+  `.unlazy/lab-kill.mjs` is the kill implementation to copy from.
+- **Reserve a port range for the harness, sub-ranged per script.** The lab uses **9793-9831**:
+  `rule34-*` 9801-9817, `scan-ab` 9821, `net-probe` 9823. Picking a port ad hoc is how a probe ends up
+  attached to someone else's browser (fact 10).
+
+## 2026-10-10 — deleting a scratch profile that refuses to die (measured, the hard way)
+
+A test killed while a browser it spawned is still alive leaves a profile directory that then
+**refuses deletion with "Access denied" for EVERYONE — including an elevated administrator, and
+including Windows Recovery (OS not running)**. takeown fails, icacls fails, `rmdir /s /q` fails,
+`Remove-Item -Force` fails, a SYSTEM scheduled task fails, chkdsk /f finds nothing wrong. What
+actually happened in the incident: the kill orphaned the browser, the browser kept writing into its
+profile, and deletion attempts ran CONCURRENTLY with those writes — leaving directory-index entries
+that name files that no longer exist (`dir` lists folders that are not physically there). NTFS then
+answers access-denied on the stale subtree, and that state SURVIVES a reboot (it is on-disk metadata,
+not a live handle; handle.exe shows no holder).
+
+The fix — rename first, then delete:
+
+```
+move <stale-dir> <stale-dir>.kill    (or rename in Explorer)
+rmdir /s /q <stale-dir>.kill
+```
+
+Renaming forces NTFS to REWRITE the parent index entry — the exact entries that were torn — and
+deletion then goes through. A rename that also fails is the true "still locked" case; retry after
+closing holders, not with more permission tools.
+
+Prevention is cheaper than the cure, and it is already the skill's rule: never let a run die holding
+a live browser. `Browser.close` through the CDP endpoint, wait for it, and only then touch the
+profile. A timeout-killed run with a live child must be followed by `ports.mjs` (closes every lab
+port) BEFORE any cleanup of profile directories.
 
 ## Where the numbers come from
 
-Every rule above is a dated measurement, not folklore. The diary of the runs behind
-them — including the failures that forced a rule into existence — is kept verbatim in
-[`references/measurements.md`](references/measurements.md). Read it when a rule seems
-arbitrary, and append to it when a new run teaches something: an unexplained behaviour is
-a fact waiting for its measurement, and a rule with no measurement behind it is folklore.
+Every measurement quoted here was taken on this machine during real runs, and every browser
+verdict has survived a re-run: the "Edge 154 loads nothing" note of 2026-10-07 was a false
+negative from a broken run and was disproved on 2026-10-10 by the same headless+flag launch it
+claimed to have tried (SW found, state read). The full log, including the Edge 154 → Chrome for
+Testing migration comparison table, lives in the Imagus project's `knowledge.md` — grep it for
+`Chrome for Testing`, `2026-10-07`, `singleton`, `grant is per`.
 
-## Local facts override this file
+The project's `Docs/LAB_ENVIRONMENT.md` is the other half: the fixed lab constants (browser exe, the
+reusable `cft-md` profile, extension id, download dir), the one launch recipe, the port map with each
+harness's owner, and the host landmines (`ls` hangs in Git Bash — use a tiny `fs` script; `lab-ports`
+closes ports; an occupied port means the run is talking to an orphan). Read it before launching
+anything in that lab instead of re-deriving the values.
 
-`~/.ext-dev-loop/LOCAL.md` (machine) and the project's lab file carry the facts that are
-TRUE HERE. When they disagree with this file, the local file wins — fix it when reality
-changes, and never re-derive quietly.
+One deliberate difference between the two loops: **lab/site runs are VISIBLE windows by design** —
+the profiled sites hold Cloudflare clearance and the owner logs in by hand — while the *extension
+loading* checks the skill runs for you work headless. Do not "simplify" a site probe to `--headless`.
+
