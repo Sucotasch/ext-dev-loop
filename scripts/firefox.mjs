@@ -127,7 +127,11 @@ export async function main(argv) {
     path.join(process.cwd(), ".ext-dev-loop"),
     path.join(os.homedir(), ".ext-dev-loop"),
   ];
-  const DEFAULT_PROFILE = path.join(process.cwd(), ".ext-dev-loop", path.basename(EXT_ABS || "ext"), "profile");
+  // N4 (guest feedback 2026-10-12): Firefox and Chromium MUST NOT share a profile directory -
+  // after FF runs the dir mixes both formats and the next Chromium run dies on a bare EPERM
+  // stack (measured: appendFileSync(browser-stderr.log) -> EPERM, no diagnosis). Firefox now
+  // always lands in its own "<name>-ff/profile" unless --profile is given explicitly.
+  const DEFAULT_PROFILE = path.join(process.cwd(), ".ext-dev-loop", `${path.basename(EXT_ABS || "ext")}-ff`, "profile");
   const PROFILE = path.resolve(opt("--profile", DEFAULT_PROFILE));
   const isUnder = (child, parent) => {
     const rel = path.relative(path.resolve(parent), path.resolve(child));

@@ -581,6 +581,18 @@ Facts worth keeping:
   needs one manual click in a visible scratch window, then a relaunch with the same
   `--profile` and the same `--target sw --eval '!!chrome.userScripts'` probe.
 
+## A predicate that THROWS fails the wait at once (rule, 2026-10-12)
+
+`wait`/`until`/`--wait-for` predicates that throw - a SyntaxError from top-level `await`, a
+TypeError from `document.querySelector('#nope').textContent` - CANNOT become true later, so the
+run fails them immediately with the exception text (instead of a mute 30 s timeout that looks
+like flakiness). Consequences for how you write predicates:
+- guard optional chains: `document.querySelector('#x')?.textContent === 'y'` (the element may
+  legitimately not exist YET - that is what waiting means);
+- a top-level `await` needs the wrapper: `(async () => …)()`;
+- wrap genuinely risky probes in `try/catch` if failure is an expected intermediate state.
+A thrown predicate is almost always a test bug; fail fast beats burn the budget silently.
+
 ## Fresh-profile races (measured 2026-10-11, guest run)
 
 On a brand-new profile the extension's own cold-start (onInstalled, storage seeding) RUNS
@@ -597,8 +609,11 @@ also mix startup lines into a step's window - read it with that in mind (or add 
    "prove" a false defect). Open with `{"target":"page","url":"http://127.0.0.1:9811/index.html","delay":2500}`.
 2. A popup opened by the probe is a TAB, not a popup over a page: a product that operates on
    `chrome.tabs.query({active:true,currentWindow:true})` will see the popup tab as active and
-   consider its own result stale. Activate the TARGET tab first, from a `target:"sw"` step:
-   `(async () => { const t = (await chrome.tabs.query({})).find(x => x.url.includes("127.0.0.1:9811")); await chrome.tabs.update(t.id, {active:true}); })()`.
+   consider its own result stale. Activating the target tab in a SEPARATE step does NOT survive
+   to the click (guest-measured 2026-10-12: separate sw-step activation -> `0 items`; the
+   attach to the popup page re-activates the popup). Activate the target tab **in the SAME eval
+   that clicks** - one `target:"ext"` step:
+   `(async () => { const t = (await chrome.tabs.query({})).find(x => x.url.includes("127.0.0.1:9811")); await chrome.tabs.update(t.id, {active:true}); document.getElementById("chrome-download-btn").click(); })()`.
 3. Click the product's real button from `target:"ext"`, then check the FILES in
    `.ext-dev-loop/downloads` - more reliable than `chrome.downloads.search` and needs no `wait`.
 4. Read the product's own state (`chrome.storage.local.get(...)`) from a `target:"sw"` step -

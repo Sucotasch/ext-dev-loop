@@ -525,7 +525,17 @@ if (!ATTACH) {
     if (!ignored) console.log("hint: add `.ext-dev-loop/` to .gitignore - a scratch profile belongs to no commit");
   }
   STDERR_LOG = path.join(PROFILE, "browser-stderr.log");
-  stderrFd = fs.openSync(STDERR_LOG, "w"); // per run: the report is THIS run, not a pile of history
+  // N4 (guest feedback 2026-10-12): a poisoned profile dir (e.g. one Firefox also wrote into)
+  // fails openSync with a bare EPERM stack and no diagnosis. Say what to do instead.
+  try {
+    stderrFd = fs.openSync(STDERR_LOG, "w"); // per run: the report is THIS run, not a pile of history
+  } catch (e) {
+    console.error(`ERROR: cannot write the browser log inside ${PROFILE} (${e.code || e.message}).`);
+    console.error(`  The profile directory is poisoned/not writable. Pass a FRESH --profile under the`);
+    console.error(`  scratch root (e.g. .ext-dev-loop/<name>/profile) - never delete-and-retry the same dir`);
+    console.error(`  while a browser may be holding it; close leftover lab browsers with ports.mjs first.`);
+    process.exit(1);
+  }
   const flags = [
     `--user-data-dir=${PROFILE}`,
     `--remote-debugging-port=${PORT}`,
@@ -611,6 +621,28 @@ if (!ATTACH) {
     } catch {}
   }
   console.log(`  pid ${launchedPid || "(unknown)"}, port ${PORT}, stderr -> ${STDERR_LOG}`);
+  // N7 (guest feedback 2026-10-12): a listener squatting the port WITHOUT SO_REUSEADDR makes the
+  // browser fail to bind silently - the run then sat 180 s with no attach, no error, no hint,
+  // and the spawned browser outlived the caller. Prove the endpoint is UP before doing anything
+  // else; if it never comes, close what we started and say what to check.
+  let up = false;
+  const upDeadline = Date.now() + 15000;
+  while (Date.now() < upDeadline) {
+    try {
+      const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`, { signal: AbortSignal.timeout(1000) })).json();
+      if (v && v.webSocketDebuggerUrl) { up = true; break; }
+    } catch {}
+    await sleep(500);
+  }
+  if (!up) {
+    console.error(`ERROR: the debug endpoint never came up on port ${PORT}.`);
+    console.error(`  The port may be squatted by another listener (check BOTH 127.0.0.1 and [::1]:`);
+    console.error(`  netstat -ano | findstr :${PORT}), or the browser failed to start - read ${STDERR_LOG}.`);
+    console.error(`  Closing what this run started...`);
+    killTree(launchedPid);
+    forget();
+    process.exit(1);
+  }
 } else {
   console.log(`attaching to the kept instance on port ${PORT} (${stateEntry.extName || "?"}, pid ${stateEntry.pid || "?"})`);
 }
@@ -680,6 +712,34 @@ async function findSW(seenId = null, name = SW_NAME, seenBefore = swFoundOnce) {
   // run had already found and used this worker sent the agent chasing the wrong cause - the
   // usual truth is the 2026-10-07 note: MV3 lists workers only while RUNNING, so a found-then-
   // lost worker is idle/suspended, not missing. "Never found" keeps the old suspects.
+  // N1 (guest feedback 2026-10-12): an idle MV3 worker is not listed, and an --attach resume
+  // dies on "SW not found" before the run can wake it - the message then misdirects to a stale
+  // profile. Waking it ourselves is measured to work: opening ANY extension page brings the
+  // worker back (guest-verified). Try that once before giving up.
+  if (ATTACH) {
+    try {
+      const pages = (await list()).filter((t) => t.type === "page" && t.url.startsWith("chrome-extension://"));
+      const wakeUrl = (pages[0] && pages[0].url)
+        || (globalThis.__extId ? `chrome-extension://${globalThis.__extId}/` : null);
+      if (wakeUrl) {
+        console.log(`  (worker not listed - it may be idle; waking it via ${wakeUrl.slice(0, 60)})`);
+        await fetch(`http://127.0.0.1:${PORT}/json/new?${encodeURIComponent(wakeUrl)}`, { method: "PUT" }).catch(() => {});
+        const deadline2 = Date.now() + Math.min(SW_TIMEOUT, 20000);
+        while (Date.now() < deadline2) {
+          await sleep(500);
+          const l = await list();
+          for (const target of l.filter((x) => x.type === "service_worker" && x.id !== seenId)) {
+            try {
+              const s2 = await attach(target.webSocketDebuggerUrl);
+              const r2 = await s2.send("Runtime.evaluate", { expression: "chrome.runtime.getManifest ? chrome.runtime.getManifest().name : null", returnByValue: true });
+              s2.ws.close();
+              if (r2.result?.value && name && r2.result.value.toLowerCase().includes(name.toLowerCase())) { swFoundOnce = true; return { target: target, name: r2.result.value }; }
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
   if (seenBefore) {
     console.log(`  (service worker "${name}" was found earlier this run, but is not answering now -`);
     console.log(`        the usual truth: an MV3 worker SUSPENDS and stops being listed (2026-10-07 note);`);
@@ -1116,18 +1176,39 @@ try {
     if (!WATCH_GIVEN) { closeAll(); await sleep(80); reportStderr(); await stop("after --msg"); process.exit(process.exitCode || 0); }
   }
 
+  // ── one predicate parse for every wait loop (F1 completion, guest feedback 2026-10-12) ──
+  // The transport resolves Runtime.evaluate with `m.result ?? m`, so exceptionDetails sits at
+  // the TOP level of the response. A predicate that cannot compile (top-level await, a typo) or
+  // throws every tick can never become true - all three wait loops (pollUntil, --wait-for sw,
+  // --wait-for page) must fail it at once with the reason, not burn the timeout.
+  const evalPredicate = async (send, expression, contextId) => {
+    const r = await send("Runtime.evaluate", {
+      expression, ...(contextId ? { contextId } : {}), returnByValue: true, awaitPromise: true,
+    });
+    if (r && r.error) return { dead: true, why: r.error.message || String(r.error.code) };
+    const ex = r?.exceptionDetails;
+    if (ex) return { threw: true, why: `predicate threw: ${ex.exception?.description || ex.text}` };
+    return { value: r?.result?.value };
+  };
+
   // ── --target sw: the worker's own state ────────────────────────────────────
   if (TARGET === "sw" && (EVAL || WAIT_FOR)) {
     if (WAIT_FOR) {
       const t0 = Date.now();
       let ok = false;
       while (Date.now() - t0 < WAIT_TIMEOUT) {
-        const r = await s.send("Runtime.evaluate", { expression: WAIT_FOR, returnByValue: true, awaitPromise: true });
-        if (r?.result?.value) { ok = true; break; }
+        const res = await evalPredicate((m, p) => s.send(m, p), WAIT_FOR, null);
+        if (res.threw) {
+          console.log(`\nwait-for (sw): FAILED at once - ${res.why}`
+            + (/await/.test(WAIT_FOR) && !/async/.test(WAIT_FOR) ? " (top-level await? wrap the predicate in (async () => …)())" : ""));
+          process.exitCode = 1;
+          break;
+        }
+        if (res.value) { ok = true; break; }
         await sleep(300);
       }
-      console.log(`\nwait-for (sw): ${ok ? "true" : "TIMED OUT"} after ${Date.now() - t0}ms`);
-      if (!ok) process.exitCode = 1;
+      if (!ok && !process.exitCode) { console.log(`\nwait-for (sw): TIMED OUT after ${Date.now() - t0}ms`); process.exitCode = 1; }
+      else if (ok) console.log(`\nwait-for (sw): true after ${Date.now() - t0}ms`);
     }
     if (EVAL) {
       console.log(`\neval (service worker):`);
@@ -1156,12 +1237,20 @@ try {
       if (!world || !world.length) throw new Error(`no ${WORLD} world context found on ${pageUrl}`);
       const t0 = Date.now();
       let ok = false;
+      let failedAt = null;
       while (Date.now() - t0 < WAIT_TIMEOUT) {
-        const r = await pg.send("Runtime.evaluate", { expression: WAIT_FOR, contextId: world[0].id, returnByValue: true, awaitPromise: true });
-        if (r?.result?.value) { ok = true; break; }
+        const res = await evalPredicate((m, p) => pg.send(m, p), WAIT_FOR, world[0].id);
+        if (res.threw) {
+          failedAt = res.why;
+          console.log(`  wait-for: FAILED at once - ${res.why}`
+            + (/await/.test(WAIT_FOR) && !/async/.test(WAIT_FOR) ? " (top-level await? wrap the predicate in (async () => …)())" : ""));
+          process.exitCode = 1;
+          break;
+        }
+        if (res.value) { ok = true; break; }
         await sleep(300);
       }
-      console.log(`  wait-for: ${ok ? "true" : "TIMED OUT"} after ${Date.now() - t0}ms`);
+      if (!failedAt) console.log(`  wait-for: ${ok ? "true" : "TIMED OUT"} after ${Date.now() - t0}ms`);
       if (!ok) {
         process.exitCode = 1;
         const info = await challengeInfo(pg, world[0].id);
@@ -1261,6 +1350,7 @@ try {
             console.log(`  wait: FAILED at once - ${res.why}`
               + (/await/.test(expr) && !/async/.test(expr) ? ` (top-level await? wrap the predicate in (async () => …)())` : ""));
             process.exitCode = 1;
+            globalThis.__untilThrew = true;   // M3: ask's handover text must not blame a human for a broken predicate
             return false;
           }
           if (res.value) { ok = true; break; }
@@ -1296,8 +1386,10 @@ try {
           console.log("  exit 3 = needs a human, NOT a failure");
         } else {
           process.exitCode = 1;
-          console.log("  the run ends here (the browser was closed). Pass --ask-keep only if your shell returns");
-          console.log("  immediately - a kept browser hangs a caller that waits for the whole process tree.");
+          console.log(ATTACH
+            ? "  the run ends here (the browser STAYS UP - it is a kept instance; resume with --attach)."
+            : "  the run ends here (the browser was closed). Pass --ask-keep only if your shell returns");
+          if (!ATTACH) console.log("  immediately - a kept browser hangs a caller that waits for the whole process tree.");
         }
       };
       if (where === "sw") {
@@ -1329,7 +1421,14 @@ try {
         }
         continue;
       }
-      const pageUrl = step.url || (where === "ext" ? extPageUrl : "about:blank");
+      // N5 (guest feedback 2026-10-12): a step without `url` used to fall back to about:blank,
+      // silently reading an empty page while step 1 held a real one - a multi-step scenario
+      // that declared `url` once then quietly tested the wrong document. Inherit the LAST
+      // page step's url instead; "ext" keeps its own driver page.
+      if (!step.url && where === "page" && globalThis.__lastPageUrl) globalThis.__curUrl = globalThis.__lastPageUrl;
+      else if (step.url) globalThis.__curUrl = step.url;
+      const pageUrl = step.url || (where === "ext" ? extPageUrl : (where === "page" ? (globalThis.__curUrl || "about:blank") : "about:blank"));
+      if (where === "page" && pageUrl !== "about:blank") globalThis.__lastPageUrl = pageUrl;
       if (!pageUrl) { console.error("  no extension page known - start with --ext so the manifest can name it"); process.exitCode = 1; continue; }
       console.log(`  url: ${pageUrl}`);
       const { pg, ctxs, world } = await resolveWorld(pageUrl, { world: world0 });
@@ -1345,8 +1444,15 @@ try {
         const budget = step.waitTimeout || ASK_TIMEOUT;
         console.log(`  ASK: ${step.ask}`);
         console.log(`  waiting up to ${Math.round(budget / 1000)}s for a human in the visible window...`);
+        globalThis.__untilThrew = false;
         const done = await pollUntil(pg, ctx.id, step.until, budget, true);
         if (!done) {
+          if (globalThis.__untilThrew) {
+            console.log(`  the predicate is BROKEN (it threw) - fix the until expression; there is nothing a human can do here.`);
+            process.exitCode = 1;
+            try { pg.ws.close(); } catch {}
+            break;
+          }
           await handover(pg, ctx.id, step.ask);
           try { pg.ws.close(); } catch {}
           break;
