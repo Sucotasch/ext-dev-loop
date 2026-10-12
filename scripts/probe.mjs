@@ -1404,6 +1404,19 @@ try {
         }
         if (step.wait) await pollUntil(s, null, step.wait, step.waitTimeout || WAIT_TIMEOUT);
         if (step.delay) await sleep(step.delay);
+        // H1 (guest feedback 2026-10-12, report #3): the step file is a GATE, not an eye-protocol.
+        // assert evaluates once (same evalPredicate as wait - one exception story) and fails the
+        // run on a wrong VALUE; `expect` (optional JSON) demands strict equality.
+        if (step.assert) {
+          const res = await evalPredicate((m, p) => s.send(m, p), step.assert, null);
+          if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); process.exitCode = 1; }
+          else if (step.expect !== undefined) {
+            const same = JSON.stringify(res.value) === JSON.stringify(step.expect);
+            console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)}`);
+            if (!same) process.exitCode = 1;
+          } else if (!res.value) { console.error(`  ASSERT FAILED: value was ${JSON.stringify(res.value)}`); process.exitCode = 1; }
+          else console.log(`  assert ok: ${JSON.stringify(res.value)}`);
+        }
         if (step.eval) {
           const r = await evalIn(s, step.eval, null, { label: "sw" });
           if (r.ok) show(r.value);
@@ -1466,6 +1479,19 @@ try {
           if (info && info.challenge)
             console.log(`  NOTE: this looks like a CHALLENGE page (${(info.marks || []).join(",")}) on ${info.href} - the site never let us in, so a mute timeout is expected`);
         }
+      }
+      // H1 (guest feedback 2026-10-12, report #3): the step file is a GATE, not an eye-protocol.
+      // assert evaluates once (same evalPredicate as wait - one exception story) and fails the
+      // run on a wrong VALUE; `expect` (optional JSON) demands strict equality.
+      if (step.assert) {
+        const res = await evalPredicate((m, p) => pg.send(m, p), step.assert, ctx.id);
+        if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); process.exitCode = 1; }
+        else if (step.expect !== undefined) {
+          const same = JSON.stringify(res.value) === JSON.stringify(step.expect);
+          console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)}`);
+          if (!same) process.exitCode = 1;
+        } else if (!res.value) { console.error(`  ASSERT FAILED: value was ${JSON.stringify(res.value)}`); process.exitCode = 1; }
+        else console.log(`  assert ok: ${JSON.stringify(res.value)}`);
       }
       if (step.delay) await sleep(step.delay);
       if (step.eval) {

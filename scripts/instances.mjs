@@ -3,11 +3,13 @@
 // look, because we must know whether an instance is still running (and which one
 // is ours) before deciding anything.
 //
-//   node instances.mjs [--state <file>]
+//   node instances.mjs [--state <file>] [--ports 9801,9805] [--range 9800-9810]
 //
-// The registry is written by probe.mjs --keep and removed by probe.mjs --close, so
-// a record with a dead port means a browser died on its own (crash / user closed it)
-// - not something we caused.
+// H3 (guest feedback 2026-10-12): a scan of the whole reserved range HTTP-probes every lab
+// port - that is a REQUEST, and a fixture server counting requests will see a stray
+// /json/version hit that can fail a "zero requests between scans" gate. --ports/--range
+// narrows the scan to only the ports you own; between gates prefer them, or run the scan
+// BETWEEN gates, not inside one.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -31,6 +33,16 @@ const [PORT_LO, PORT_HI] = reservedRange();
 const PORTS = [];
 for (let p = PORT_LO; p <= PORT_HI; p++) PORTS.push(p);
 
+// H3: --ports / --range narrow the scan to the ports you own
+const own = [];
+{
+  const ps = opt("--ports", "");
+  const rg = opt("--range", "");
+  if (ps) for (const x of ps.split(",").map((s) => Number(s.trim())).filter(Boolean)) own.push(x);
+  if (rg) { const m = /^(\d+)-(\d+)$/.exec(rg); if (m) for (let p = +m[1]; p <= +m[2]; p++) own.push(p); }
+}
+const scanSet = own.length ? [...new Set(own)].sort((a, b) => a - b) : PORTS;
+
 let registry = {};
 try { registry = JSON.parse(fs.readFileSync(STATE_FILE, "utf8")); }
 catch { console.log(`no registry at ${STATE_FILE} (nothing was launched with --keep)`); }
@@ -45,8 +57,8 @@ if (known.length) {
   }
 }
 
-const ports = [...new Set([...PORTS, ...known.map(Number)])].sort((a, b) => a - b);
-console.log(`scanning ${ports[0]}-${ports[ports.length - 1]} (${ports.length} ports, parallel)...`);
+const ports = [...new Set([...scanSet, ...known.map(Number)])].sort((a, b) => a - b);
+console.log(`scanning ${ports[0]}-${ports[ports.length - 1]} (${ports.length} ports, parallel${own.length ? ", narrowed by --ports/--range" : ""})...`);
 // First pass - parallel /json/version on every port (fast, short timeout).
 const probe = await Promise.all(ports.map(async (port) => {
   try {

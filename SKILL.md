@@ -593,6 +593,39 @@ like flakiness). Consequences for how you write predicates:
 - wrap genuinely risky probes in `try/catch` if failure is an expected intermediate state.
 A thrown predicate is almost always a test bug; fail fast beats burn the budget silently.
 
+## Step files are GATES: `assert` (H1), mutation proof (H2), on-the-wire gates (H6) — 2026-10-12
+
+**`assert` step (H1).** A step file used to be a protocol to read by eye: a run could print
+`maxConcurrent = 5` where the gate wanted 2 and still exit 0. Now a step may carry `assert`
+(+ optional `expect`), same predicate semantics as `wait` (one evalPredicate, same exception
+story, `(async () => …)()` hint):
+
+- `{"assert": "<predicate>"}` — run fails (exit 1) unless the value is truthy.
+- `{"assert": "<expr>", "expect": <json>}` — run fails unless STRICTLY equal (JSON.stringify
+  comparison; numbers, strings, small objects — for floats compare with a predicate instead).
+- Printing: `assert ok: 3` / `ASSERT FAILED: expected 2, actual 3` / `ASSERT BROKEN (cannot
+  evaluate): <exception>`. Works on `sw` and `page`/`ext` steps.
+- Verified live: manifest_version expect 3 → ok, expect 2 → `ASSERT FAILED`, exit 1; page
+  `document.querySelectorAll('div').length` expect 999 → FAILED, exit 1.
+
+**Mutation proof (H2).** Doctrine "a red test must be proven to bite" now includes the OTHER
+side: after you mutate a product file to redden a test, you must PROVE the file came back
+byte-identical — eyes and `git diff --stat` are not proof. Use `scripts/mutate.mjs`:
+
+    node <skill>/scripts/mutate.mjs <file> '<old exact substring>' '<new>' <command...>
+    # sha256 -> mutate -> run command -> restore -> sha256; prints RESTORED OK (sha256 identical)
+    # --keep leaves the mutation in; --regex for a regexp; exit 1 if command failed or restore mismatched
+
+Verified live: mutation made a test fail (exit 1, `BROKEN referer`), restore proven by hash.
+**Never leave a product file mutated**; if the run was killed mid-mutation, `git checkout` it.
+
+**On-the-wire gates (H6).** A gate that measures the real network beats a mock: the recipe is
+(1) a fixture server with per-path counters, `maxConcurrent` (in-flight), and counters that
+RESET ON READ — one metric belongs to one scan; (2) `Access-Control-Allow-Origin: *` on the
+stats response or a `fetch` from a step cannot read it; (3) read them from a `sw` step
+(`fetch('http://127.0.0.1:9829/__stats')` works from the extension world — host permissions).
+The siren song of a gate is "I checked it on mocks" — counters on the wire do not lie.
+
 ## Fresh-profile races (measured 2026-10-11, guest run)
 
 On a brand-new profile the extension's own cold-start (onInstalled, storage seeding) RUNS
