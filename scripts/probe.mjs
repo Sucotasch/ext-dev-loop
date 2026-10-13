@@ -79,6 +79,7 @@ let EVAL = opt("--eval");
 // A real check is longer than a shell argument wants to be (quotes, newlines,
 // `$` and backticks all get eaten before node sees them). Pass a file instead.
 const EVAL_FILE = opt("--eval-file");
+const OUT_JSON = opt("--out-json");   // P5: write the --eval result to a file instead of digging it out of an escaped log line
 const WORLD = opt("--in", "main");          // "main" | "isolated" (page target only)
 // Where --eval / --wait-for run:
 //   page = a real page's world (a content script's world with --in isolated)
@@ -110,6 +111,7 @@ const MSG_AWAIT = Number(opt("--await", "10000"));
 // load, which is exactly the slow part.
 const KEEP = flag("--keep");
 const ATTACH = flag("--attach");
+const CONTEXTS_WAIT = Number(opt("--contexts", "0")) || 0;   // P4: seconds, then re-list execution contexts
 const CLOSE = flag("--close");
 // --script <file>: a JSON array of steps, all run against ONE browser in ONE
 // invocation. This exists because a harness that waits for the whole process tree
@@ -996,6 +998,23 @@ try {
     const named = mp(EXT_MANIFEST).length ? mp(EXT_MANIFEST).join(", ") : "none named by the manifest";
     console.log(`extension pages: chrome-extension://${extId}/ (${named})`);
   }
+  // P1 (guest feedback 2026-10-13, report #4): the profile serves the copy it was INSTALLED
+  // with, so a stale --profile makes an edit silently not take effect - and nothing could
+  // tell fresh from stale (five fresh profiles were burned on exactly that). Compare the
+  // on-disk manifest with the loaded copy every run; cheapest possible "did my edit load?".
+  if (EXT_MANIFEST?.version && extId) {
+    let loadedV = null;
+    try { loadedV = JSON.parse(st.result.value).version; } catch {}
+    if (loadedV && loadedV !== EXT_MANIFEST.version) {
+      console.log(`  !!! extension copy: disk v${EXT_MANIFEST.version} != loaded v${loadedV}`);
+      console.log(`        The RUNNING browser holds the copy it read at ITS STARTUP --load-extension re-reads disk`);
+      console.log(`        on every launch (measured 2026-10-13), so this mismatch means you are attached to a browser`);
+      console.log(`        launched before the edit. Close the kept instance (--close) and relaunch; "the edit did not`);
+      console.log(`        take effect" here is a stale INSTANCE, not a code problem.`);
+    } else if (loadedV) {
+      console.log(`  extension copy: disk v${EXT_MANIFEST.version} == loaded v${loadedV}`);
+    }
+  }
   // The one thing only a human can do - measured 2026-09-19: on Chrome 138+ the
   // "Allow User Scripts" toggle lives on the extension's own details page and CDP
   // cannot drive chrome:// pages. Say it loudly, with the exact next step, because
@@ -1214,6 +1233,7 @@ try {
       console.log(`\neval (service worker):`);
       const r = await evalIn(s, EVAL, null, { label: "sw" });
       if (r.ok) show(r.value);
+      if (OUT_JSON) { fs.writeFileSync(OUT_JSON, JSON.stringify(r.ok ? r.value : { error: r.error || "eval failed" }, null, 2)); console.log(`  out-json: written ${OUT_JSON}`); }
     }
     // closeAll() then a tick before exit: closing the worker's WebSocket and
     // process.exit() in the same tick makes node assert on Windows
@@ -1232,6 +1252,22 @@ try {
       const frame = c.auxData && c.auxData.frameId ? c.auxData.frameId.slice(0, 8) : "?";
       const top = c.auxData && c.auxData.frameId === topFrameId ? " TOP" : "";
       console.log(`    context ${c.id}: default=${c.auxData ? c.auxData.isDefault : "?"} type=${c.auxData ? c.auxData.type : "?"} frame=${frame}${top} origin=${c.origin} name="${c.name || ""}"`);
+    }
+    // P4 (guest feedback 2026-10-13): the list above is ONE early snapshot - across one
+    // session it read "contexts (5)" 11 times and "(2)" 9 times while every run worked,
+    // so it cannot be read as an injection verdict. Name the manifest's own count and
+    // offer a delayed re-scan (--contexts <sec>).
+    if (EXT_MANIFEST?.content_scripts) console.log(`  manifest content_scripts: ${EXT_MANIFEST.content_scripts.length} set(s); the list above is one EARLY snapshot - isolated contexts can attach later`);
+    if (CONTEXTS_WAIT > 0) {
+      console.log(`  --contexts: waiting ${CONTEXTS_WAIT}s, then re-scanning...`);
+      await sleep(CONTEXTS_WAIT * 1000);
+      const ctxs2 = pg.raw.filter((m) => m.method === "Runtime.executionContextCreated").map((m) => m.params.context);
+      console.log(`  execution contexts AFTER ${CONTEXTS_WAIT}s (${ctxs2.length}):`);
+      for (const c of ctxs2) {
+        const frame = c.auxData && c.auxData.frameId ? c.auxData.frameId.slice(0, 8) : "?";
+        const top = c.auxData && c.auxData.frameId === topFrameId ? " TOP" : "";
+        console.log(`    context ${c.id}: default=${c.auxData ? c.auxData.isDefault : "?"} type=${c.auxData ? c.auxData.type : "?"} frame=${frame}${top} origin=${c.origin} name="${c.name || ""}"`);
+      }
     }
     if (WAIT_FOR) {
       if (!world || !world.length) throw new Error(`no ${WORLD} world context found on ${pageUrl}`);
@@ -1264,6 +1300,7 @@ try {
       console.log(`  evaluating in the ${WORLD} world (context ${ctx.id}, origin ${ctx.origin})`);
       const r = await evalIn(pg, EVAL, ctx.id, { label: `${WORLD} world` });
       if (r.ok) show(r.value);
+      if (OUT_JSON) { fs.writeFileSync(OUT_JSON, JSON.stringify(r.ok ? r.value : { error: r.error || "eval failed" }, null, 2)); console.log(`  out-json: written ${OUT_JSON}`); }
     }
     if (SHOT) {
       await pg.send("Page.enable");

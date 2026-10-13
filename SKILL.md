@@ -593,6 +593,39 @@ like flakiness). Consequences for how you write predicates:
 - wrap genuinely risky probes in `try/catch` if failure is an expected intermediate state.
 A thrown predicate is almost always a test bug; fail fast beats burn the budget silently.
 
+## The artifact wins; page-side boot ladder (P2/P3, guest feedback 2026-10-13, report #4)
+
+**P2 — the acceptance test is the FILE, not the toast.** Measured on Triangle Downloader: the
+extension's UI printed «Готово» for a file whose audio track was missing a 10 s segment; only
+ffprobe exposed it. A probe that measures internal state (buffer edge, `currentTime`) can
+disagree with the artifact — **the artifact wins**. Inspect what landed with
+`scripts/artifact.mjs`:
+
+    node scripts/artifact.mjs <downloads-dir> [--since <min|ISO|epoch>] [--hash]
+    # files newer than --since; with ffprobe: container/streams + per-stream packet timeline
+    # (gaps / repeats / backward steps; a corrupt file prints "<-- LOOK HERE"), else size+hash.
+
+Verified live: a clean 2s mp4 reads `60 packets, gaps: 0`; the gap math proven on a synthetic
+timeline with a 4.1 s hole. Related: the loaded-extension version is compared with the disk
+manifest every run — `extension copy: disk vA == loaded vB` or a loud warning. The stale carrier
+is the RUNNING browser (it holds the copy it read at ITS startup; `--load-extension` re-reads
+disk on every launch — measured), so on a mismatch close the kept instance and relaunch; and
+`--contexts <sec>` re-lists execution contexts after a delay (the early snapshot cannot be
+read as an injection verdict — one session printed (5) 11 times and (2) 9 times, all working).
+
+**P3 — the page-side boot ladder for asynchronously-built players.** In a fresh profile an
+immediate `document.querySelector('video')` returns `{"fatal":"no player"}` — that reads like a
+host problem but is a BOOT-ORDER bug; and `wait`/`--wait-for` on `video.duration > 0` never
+resolves while the player is PAUSED — the step must start playback first (both bit the same
+guest session twice; after the ladder the identical commands went green). The ladder:
+
+    1. wait for the element:          {"target":"page","wait":"!!document.querySelector('video')||!!document.querySelector('#movie_player')"}
+    2. prove the page world answers:  eval the extension's own postMessage ping, or
+                                      document.querySelector('#movie_player') ? 'player up' : 'no player'
+    3. start playback:                (async () => { const v = document.querySelector('video');
+                                        if (v) { v.muted = true; await v.play(); } })()
+    4. only NOW wait on media values:  {"wait":"(()=>{const v=document.querySelector('video');return v&&v.duration>0})()"}
+
 ## Step files are GATES: `assert` (H1), mutation proof (H2), on-the-wire gates (H6) — 2026-10-12
 
 **`assert` step (H1).** A step file used to be a protocol to read by eye: a run could print
