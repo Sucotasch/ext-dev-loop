@@ -193,7 +193,7 @@ if (LIVE) {
     const jsErr = (out.match(/\[ff js\] (.+)/g) || []).map((l) => l.replace(/^\[ff js\] /, ""));
     const tabs = (out.match(/\[tab\] (\S+)/g) || []).map((l) => l.replace(/^\[tab\] /, ""));
     if (installed) ok("live: firefox installs the tree and stays silent", `${installed[1]} -> ${installed[2]}` + (tabs.length ? `; tabs: ${tabs.join(", ")}` : ""));
-    else bad("live: firefox installs the tree", err.split(/\r?\n/)[0] || "no install line - run the probe by hand to see why");
+    else bad("live: firefox installs the tree", (err.split(/\r?\n/).filter((l) => /ERROR|refus|occupied|not found/i.test(l))[0] || err.split(/\r?\n/)[0] || "no install line - run the probe by hand to see why"));
     if (jsErr.length) bad("live: no JavaScript error from the extension", jsErr.slice(0, 2).join(" | "));
     else if (installed) ok("live: no JavaScript error from the extension", "Firefox stderr was clean for this run");
   } else {

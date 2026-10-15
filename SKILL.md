@@ -219,6 +219,28 @@ Rules:
 - When you learn something durable (a port sub-range, a profile grant, a host quirk), append
   it. These files are private, gitignored, and never published.
 
+## Feedback correspondence (how this skill's guest reports travel)
+
+Guest agents test this harness on real projects and write reports; the maintainer answers.
+Rules that keep the exchange alive across projects and harnesses:
+
+- Reports live in the shared, project-agnostic dir `~/.ext-dev-loop/`
+  (`FEEDBACK-ext-dev-loop-<date>.md`), never inside one project — a guest working in
+  project A must be able to find the exchange that happened in project B.
+- The maintainer appends the response IN THE SAME FILE: verdict per finding (accepted /
+  fixed + how it was verified live / not reproduced — with the measurement), a "check this
+  list before re-reporting" rundown, and a "what to verify in your next pass" checklist.
+- Responses must be SELF-CONTAINED: the guest may work without the prior exchange (another
+  project, no shared history) — open with a one-line digest per previously closed finding
+  they may have missed, so nothing needs to be hunted down in another project's dirs.
+- End every response asking for the unfiltered dump: 3-10 lines of "what I had to figure
+  out beyond the task", no value judgment at capture — usefulness appears at the reader's
+  time of need, not the writer's time of writing; let the reader grep, not the writer
+  prophesy.
+- At each contact, delta-scan the guest's neighboring artifacts (their project's LAB.md /
+  knowledge.md): host/harness facts absent from `~/.ext-dev-loop/LOCAL.md` get pulled in;
+  project-domain facts stay in the guest's project.
+
 ## Run the loop
 
 **Start with `scripts/doctor.mjs`** — it answers "will the loop work here, for this
@@ -572,8 +594,13 @@ Facts worth keeping:
 - Whether a content script's console output can be filtered reliably by
   `executionContextId` in a page with several default contexts (one isolated log did map
   correctly, but the id you evaluate with is not always the id reported).
-- Reload through `chrome.runtime.reload()` on a **module** service worker — the Imagus
-  measurement was on a classic SW; this project's SW is `type: module`.
+- Reload through `chrome.runtime.reload()` on a **module** service worker — genuinely unmeasured;
+  the Imagus measurement was on a classic SW. (2026-10-15 correction: web-media-parser's SW turned
+  out to be CLASSIC — manifest has no `"type"` — so a claim that it was module was wrong. The
+  state probe now prints `sw kind: classic|module` every run: on a CLASSIC worker, sw steps can
+  call the product's own top-level functions via Runtime.evaluate — guest-verified with
+  `loadSieveRules()`/`upgradeMediaList()`/`broadcastScanFinished()`; on a module worker they
+  cannot, and only `chrome.*` messaging paths remain.)
 - Whether Chrome/Edge keeps the per-extension **Allow User Scripts** toggle ON across a
   browser restart. Measured here with a FRESH scratch profile: the API is `undefined`
   and stays `undefined` (the toggle starts off, per Chrome's documented migration), and
@@ -592,6 +619,40 @@ like flakiness). Consequences for how you write predicates:
 - a top-level `await` needs the wrapper: `(async () => …)()`;
 - wrap genuinely risky probes in `try/catch` if failure is an expected intermediate state.
 A thrown predicate is almost always a test bug; fail fast beats burn the budget silently.
+
+## Assert semantics, fault injection, and the product log (guest feedback 2026-10-15, report #5)
+
+- **An assert predicate is a FRESH evaluate.** It cannot see bindings an earlier step's `eval` set
+  (measured twice, sw AND ext: `globalThis.__s8.A1` set in step N reads as undefined in step N+1's
+  assert — the failure prints `ASSERT BROKEN` and looks exactly like a broken product). Write each
+  assertion **self-contained** (recompute the value inside the predicate), or persist the
+  observation through `chrome.storage.local` and assert on that. `ASSERT BROKEN` now prints this
+  hint itself.
+- **`expect` ignores key order** (canonicalised compare since 2026-10-15). Before that, identical
+  objects with different insertion order failed the gate — a verdict must depend on the data, not
+  on `Object.keys` order.
+- **Native chrome APIs: assignment is a silent no-op, `Object.defineProperty` DOES patch.** Plain
+  `chrome.storage.local.set = fn` is silently ignored (guest-measured 2026-10-15: accepted,
+  `typeof` stays `"function"`, the next write succeeds) — a fault-injection step built on it passes
+  while the product never saw the failure. The measured working form (2026-10-15, live):
+  `Object.defineProperty(chrome.storage.local, 'set', { value: () => Promise.reject(new Error('forced')), configurable: true })`
+  → the next write REJECTS with the forced error. Rule: fault-inject through defineProperty AND
+  prove the injection took (the probe write must actually fail) before trusting the fault test;
+  plain assignment is never proof. Where a real failure is cheaper (e.g. a scan against a tab with
+  no content script), prefer the real one.
+- **The product's own log is part of the artifact.** "A green product + an empty queue ⇒ read the
+  product's stderr" (measured 2026-10-15: a `--windowed` PyInstaller app answers `{"ok": true}` from
+  a Qt slot whose `os.makedirs` raised `NotADirectoryError` AFTER the payload was drained — task
+  silently gone; stdout was EMPTY, the whole truth was on stderr). `artifact.mjs` covers the file
+  half; the log half is read by the harness's stdout/stderr split — read BOTH files, not just the
+  stdout half.
+- **Identifying tabs for the activate-then-click rule:** the driver/extension page is INVISIBLE to
+  `chrome.tabs.query({})` URL matches (host permissions do not cover `chrome-extension://` tabs) —
+  use `chrome.tabs.getCurrent()` from inside the extension page, or capture its id at open time;
+  site tabs are found by URL substring.
+- **With a reused profile, assert on DISTINCT URLs, never on raw counts** — `chrome.downloads`
+  accumulates across runs (measured: `hits.length === 3` became 6 on the second run;
+  `new Set(hits.map(d=>d.url)).size` is the stable form).
 
 ## The artifact wins; page-side boot ladder (P2/P3, guest feedback 2026-10-13, report #4)
 

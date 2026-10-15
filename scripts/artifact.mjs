@@ -48,7 +48,8 @@ if (!hasFfprobe) console.log("  note: ffprobe not on PATH - sizes/mtimes only, n
 const MEDIA = /\.(mp4|webm|mkv|mov|m4a|mp3|wav|ogg|flac)$/i;
 for (const f of files) {
   const MB = f.size / 1048576;
-  console.log(`  ${f.n}  ${MB.toFixed(2)} MB  ${f.mtime.toISOString()}${wantHash ? "  sha256 " + createHash("sha256").update(fs.readFileSync(f.p)).digest("hex").slice(0, 16) + "…" : ""}`);
+  const sizeStr = f.size < 1048576 ? `${f.size} B` : `${MB.toFixed(2)} MB`;   // P8: sub-MB files print exact bytes, "0.00 MB" reads as "empty"
+  console.log(`  ${f.n}  ${sizeStr}  ${f.mtime.toISOString()}${wantHash ? "  sha256 " + createHash("sha256").update(fs.readFileSync(f.p)).digest("hex").slice(0, 16) + "…" : ""}`);
   if (!hasFfprobe || !MEDIA.test(f.n)) continue;
   try {
     const fmt = JSON.parse(execFileSync("ffprobe", ["-v", "error", "-show_format", "-show_streams", "-of", "json", f.p], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }));

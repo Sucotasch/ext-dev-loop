@@ -1002,6 +1002,11 @@ try {
   // with, so a stale --profile makes an edit silently not take effect - and nothing could
   // tell fresh from stale (five fresh profiles were burned on exactly that). Compare the
   // on-disk manifest with the loaded copy every run; cheapest possible "did my edit load?".
+  // P1b (guest feedback 2026-10-15): classic vs module SW decides what a guest may even try -
+  // on a CLASSIC worker, Runtime.evaluate reaches the product's own top-level functions
+  // (guest-verified: loadSieveRules/upgradeMediaList/broadcastScanFinished all callable from
+  // sw steps); on a module worker none of that works.
+  if (EXT_MANIFEST?.background) console.log(`  sw kind: ${EXT_MANIFEST.background.type === "module" ? "module" : "classic"}${EXT_MANIFEST.background.type === "module" ? " - top-level product functions are NOT reachable from sw steps" : " - top-level product functions ARE reachable from sw steps"}`);
   if (EXT_MANIFEST?.version && extId) {
     let loadedV = null;
     try { loadedV = JSON.parse(st.result.value).version; } catch {}
@@ -1200,6 +1205,19 @@ try {
   // the TOP level of the response. A predicate that cannot compile (top-level await, a typo) or
   // throws every tick can never become true - all three wait loops (pollUntil, --wait-for sw,
   // --wait-for page) must fail it at once with the reason, not burn the timeout.
+  // P5 (guest feedback 2026-10-15): `expect` compared JSON.stringify output, so KEY ORDER
+  // decided pass/fail - a gate verdict must depend on the data, not Object.keys order.
+  // Canonicalise (sort keys recursively) before comparing or printing expected-vs-actual.
+  const canon = (v) => {
+    if (v === null || typeof v !== "object" || Array.isArray(v)) return JSON.stringify(v) ?? String(v);
+    return JSON.stringify(Object.keys(v).sort().reduce((a, k) => (a[k] = v[k], a), {}), (k, val) => {
+      if (val && typeof val === "object" && !Array.isArray(val)) {
+        return Object.keys(val).sort().reduce((a, kk) => (a[kk] = val[kk], a), {});
+      }
+      return val;
+    });
+  };
+
   const evalPredicate = async (send, expression, contextId) => {
     const r = await send("Runtime.evaluate", {
       expression, ...(contextId ? { contextId } : {}), returnByValue: true, awaitPromise: true,
@@ -1446,10 +1464,10 @@ try {
         // run on a wrong VALUE; `expect` (optional JSON) demands strict equality.
         if (step.assert) {
           const res = await evalPredicate((m, p) => s.send(m, p), step.assert, null);
-          if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); process.exitCode = 1; }
+          if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); console.error(`        the predicate is a FRESH evaluate - it cannot see bindings set by an earlier step; recompute the value inside it, or persist it (chrome.storage.local)`); process.exitCode = 1; }
           else if (step.expect !== undefined) {
-            const same = JSON.stringify(res.value) === JSON.stringify(step.expect);
-            console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)}`);
+            const same = canon(res.value) === canon(step.expect);
+            console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)} (key order ignored)`);
             if (!same) process.exitCode = 1;
           } else if (!res.value) { console.error(`  ASSERT FAILED: value was ${JSON.stringify(res.value)}`); process.exitCode = 1; }
           else console.log(`  assert ok: ${JSON.stringify(res.value)}`);
@@ -1481,9 +1499,10 @@ try {
       if (where === "page" && pageUrl !== "about:blank") globalThis.__lastPageUrl = pageUrl;
       if (!pageUrl) { console.error("  no extension page known - start with --ext so the manifest can name it"); process.exitCode = 1; continue; }
       console.log(`  url: ${pageUrl}`);
-      const { pg, ctxs, world } = await resolveWorld(pageUrl, { world: world0 });
+      // P4: let, not const - a vanished context (page navigated mid-run) re-resolves in place
+      let { pg, ctxs, world } = await resolveWorld(pageUrl, { world: world0 });
       if (!world.length) { console.error(`  no ${world0} world context on ${pageUrl}`); process.exitCode = 1; try { pg.ws.close(); } catch {} continue; }
-      const ctx = world[0];
+      let ctx = world[0];
       if (step.ask) {
         if (!step.until) {
           console.error("  a step with `ask` also needs `until` (the predicate that says the human is done)");
@@ -1521,11 +1540,22 @@ try {
       // assert evaluates once (same evalPredicate as wait - one exception story) and fails the
       // run on a wrong VALUE; `expect` (optional JSON) demands strict equality.
       if (step.assert) {
-        const res = await evalPredicate((m, p) => pg.send(m, p), step.assert, ctx.id);
-        if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); process.exitCode = 1; }
+        // P4 (guest feedback 2026-10-15): the ext driver page re-navigates between steps, and the
+        // FIRST evaluate after that can die on "Cannot find context with specified id" while the
+        // identical next step passes. Retry ONCE with a freshly resolved context instead of making
+        // every step-file author cargo-cult a duplicate step.
+        let res = await evalPredicate((m, p) => pg.send(m, p), step.assert, ctx.id);
+        if (/Cannot find context/i.test(res.why || "")) {
+          console.log(`  (context vanished - the page navigated; re-resolving and retrying once)`);
+          try { pg.ws.close(); } catch {}
+          ({ pg, ctxs, world } = await resolveWorld(pageUrl, { world: world0 }));
+          ctx = world[0];
+          res = await evalPredicate((m, p) => pg.send(m, p), step.assert, ctx.id);
+        }
+        if (res.dead || res.threw) { console.error(`  ASSERT BROKEN (cannot evaluate): ${res.why}`); console.error(`        the predicate is a FRESH evaluate - it cannot see bindings set by an earlier step; recompute the value inside it, or persist it (chrome.storage.local)`); process.exitCode = 1; }
         else if (step.expect !== undefined) {
-          const same = JSON.stringify(res.value) === JSON.stringify(step.expect);
-          console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)}`);
+          const same = canon(res.value) === canon(step.expect);
+          console.log(same ? `  assert ok: ${JSON.stringify(res.value)}` : `  ASSERT FAILED: expected ${JSON.stringify(step.expect)}, actual ${JSON.stringify(res.value)} (key order ignored)`);
           if (!same) process.exitCode = 1;
         } else if (!res.value) { console.error(`  ASSERT FAILED: value was ${JSON.stringify(res.value)}`); process.exitCode = 1; }
         else console.log(`  assert ok: ${JSON.stringify(res.value)}`);
