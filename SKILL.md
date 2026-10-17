@@ -720,6 +720,27 @@ stats response or a `fetch` from a step cannot read it; (3) read them from a `sw
 (`fetch('http://127.0.0.1:9829/__stats')` works from the extension world — host permissions).
 The siren song of a gate is "I checked it on mocks" — counters on the wire do not lie.
 
+## Shots, doctor, fixture server, sandboxed agents (guest feedback 2026-10-17, Antigravity)
+
+- **`shot` on an `ext` target auto-clips to the document.** Before, a popup shot captured the
+  whole 1084x673 viewport with a 604x113 px void. The clip is `document.body.offsetWidth/Height`
+  - the RENDERED bounds, which can exceed the CSS width (measured: popup claims `width: 480px`,
+  renders 500px; the auto-clip is honest about it). For store-exact dimensions pass an explicit
+  `"clip": [x, y, w, h]` on the step; `"clip": "off"` restores the full viewport.
+- **`doctor.mjs` auto-detects the extension** when `--ext` is omitted: probes `./`, `./extension`,
+  `./src`, `./app`, `./dist` for a `manifest.json`; exactly one -> selected with a notice; several
+  -> the failure LISTS the candidates.
+- **`--serve <dir>:<port>`** — an ephemeral static fixture server inside the probe process:
+  starts before step 1, dies with the run (measured: port free the moment the probe exits — no
+  orphaned `python -m http.server` listeners, the class that squatted our ports twice). Kills
+  the recipe "launch a background server, remember to kill it".
+- **`scripts/link-project.mjs [projectDir]`** — sandboxed IDE agents (Antigravity, Cursor) can't
+  read outside the workspace, so the user-level farm is invisible to them. This links the skill
+  into the project (`<project>/.agents/skills/ext-dev-loop` + `<project>/.claude/skills/ext-dev-loop`,
+  junctions, never overwrites, warns when `.agents/`/`.claude/` are not gitignored - a committed
+  junction is an opaque dir). Safe against loader-import incidents: loaders SKIP `skills/` dirs
+  and the skill has no loose scripts at its root.
+
 ## Fresh-profile races (measured 2026-10-11, guest run)
 
 On a brand-new profile the extension's own cold-start (onInstalled, storage seeding) RUNS

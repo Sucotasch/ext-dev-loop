@@ -16,7 +16,15 @@ import { fileURLToPath } from "node:url";
 
 const args = process.argv.slice(2);
 const opt = (name, def) => { const i = args.indexOf(name); return i >= 0 && args[i + 1] ? args[i + 1] : def; };
-const EXT = opt("--ext");
+const EXT = opt("--ext") || (() => {
+  // P2 (guest feedback 2026-10-17, Antigravity): bare `doctor.mjs` from a project root hard-failed.
+  // Probe the usual subdirs for a manifest.json; exactly one hit = auto-select, zero or several
+  // = stay failing WITH the candidates listed.
+  const cands = [".", "./extension", "./src", "./app", "./dist"].filter((d) => fs.existsSync(path.join(d, "manifest.json")));
+  if (cands.length === 1) { console.log(`ext: ${path.resolve(cands[0])} (auto-detected)`); return cands[0]; }
+  if (cands.length > 1) console.error(`--ext not given and ${cands.length} manifests found (${cands.join(", ")} - pass --ext <dir>)`);
+  return "";
+})();
 const LIVE = args.includes("--live");
 const VISIBLE = args.includes("--visible");
 const PORT = opt("--port", "9795");

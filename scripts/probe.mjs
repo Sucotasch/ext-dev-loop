@@ -13,6 +13,7 @@
 //                  [--msg <json>] [--await <ms>]
 //                  [--shot [path]] [--json] [--max-lines <n>]
 //                  [--script <steps.json>] [--from <n>]
+//                  [--serve <dir>:<port>]
 //   node probe.mjs --attach [--ext <dir>] [--port 9793] [--keep] <any action flags>
 //
 // A step may also be a HUMAN HANDOVER:  { ask: "...", until: "<predicate>" }
@@ -40,6 +41,7 @@
 
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 
@@ -80,6 +82,7 @@ let EVAL = opt("--eval");
 // `$` and backticks all get eaten before node sees them). Pass a file instead.
 const EVAL_FILE = opt("--eval-file");
 const OUT_JSON = opt("--out-json");   // P5: write the --eval result to a file instead of digging it out of an escaped log line
+const SERVE = opt("--serve");   // P4 (2026-10-17): "<dir>:<port>" - ephemeral static fixture server INSIDE this run
 const WORLD = opt("--in", "main");          // "main" | "isolated" (page target only)
 // Where --eval / --wait-for run:
 //   page = a real page's world (a content script's world with --in isolated)
@@ -520,6 +523,37 @@ if (!ATTACH) {
     console.error(`  it is not this run's to close. Use --attach to talk to it, --close to end it,\n  or --port <other> for a second instance.`);
     process.exit(2);
   }
+  // P4 (guest feedback 2026-10-17, Antigravity): a fixture page needed a separate background
+  // `python -m http.server` that could orphan its port if the run died. Serve fixtures inside
+  // the probe process instead: starts before any step, dies with this run - no orphans.
+  if (SERVE) {
+    const sm = /^(.+):(\d+)$/.exec(SERVE);
+    if (!sm) { console.error("[probe] --serve expects <dir>:<port>, e.g. --serve .ext-dev-loop/fixture:9811"); process.exit(2); }
+    const sdir = path.resolve(sm[1]);
+    if (!fs.existsSync(sdir)) { console.error(`[probe] --serve: ${sdir} does not exist`); process.exit(2); }
+    const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json", ".svg": "image/svg+xml", ".txt": "text/plain" };
+    globalThis.__serveSrv = http.createServer((req, res) => {
+      let p = decodeURIComponent(new URL(req.url, "http://x").pathname);
+      if (p.endsWith("/")) p += "index.html";
+      const f = path.join(sdir, p);
+      if (!path.resolve(f).startsWith(sdir)) { res.writeHead(403); return res.end(); }
+      fs.readFile(f, (e, b) => {
+        if (e) { res.writeHead(404); return res.end("404"); }
+        res.writeHead(200, { "Content-Type": MIME[path.extname(f)] || "application/octet-stream" });
+        res.end(b);
+      });
+    });
+    await new Promise((res) => {
+      globalThis.__serveSrv.on("error", (e) => {
+        console.error(`[probe] --serve: ${e.code} on port ${sm[2]} - another listener is squatting it? (check BOTH 127.0.0.1 and [::1]: netstat -ano | findstr :${sm[2]})`);
+        process.exit(1);
+      });
+      globalThis.__serveSrv.listen(Number(sm[2]), "127.0.0.1", () => {
+        console.log(`  serving ${sdir} -> http://127.0.0.1:${sm[2]} (tears down with this run - no orphan ports)`);
+        res();
+      });
+    });
+  }
   fs.mkdirSync(PROFILE, { recursive: true });
   if (isUnder(PROFILE, process.cwd())) {
     let ignored = false;
@@ -765,6 +799,7 @@ let stopping = false;
 let keepOnAsk = false;
 async function stop(reason = "done") {
   if (stopping) return; stopping = true;
+  try { if (globalThis.__serveSrv) globalThis.__serveSrv.close(); } catch {}
   if (ATTACH) { console.log(`browser left running [${reason}]`); return; }
   if (KEEP || keepOnAsk) {
     record({
@@ -798,6 +833,25 @@ process.on("exit", () => {
   if (spawnedPid && !KEEP && !ATTACH && !keepOnAsk) killTree(spawnedPid);
 });
 process.on("SIGINT", async () => { await stop("ctrl+c"); process.exit(0); });
+
+// ── P1 (guest feedback 2026-10-17, Antigravity): an extension popup shot captured the whole
+// 1084x673 viewport with a 604x113 px void - a popup's own CSS bounds are the artifact wanted.
+// For `ext` targets clip to the document automatically; an explicit clip ([x,y,w,h] | "off")
+// overrides; `page` targets keep the full viewport unless a clip is given.
+function shotClipArgs(pg, ctxId, wantClip) {
+  if (!wantClip) return {};
+  if (wantClip === false || wantClip === "off") return {};
+  if (Array.isArray(wantClip)) {
+    const [x, y, width, height] = wantClip.map(Number);
+    return { clip: { x, y, width, height, scale: 1 } };
+  }
+  return pg.send("Runtime.evaluate", {
+    expression: "JSON.stringify({ x: 0, y: 0, width: Math.ceil(document.body ? document.body.offsetWidth : document.documentElement.scrollWidth), height: Math.ceil(document.body ? document.body.offsetHeight : document.documentElement.scrollHeight), scale: 1 })",
+    ...(ctxId ? { contextId: ctxId } : {}), returnByValue: true,
+  }).then((r) => {
+    try { return { clip: JSON.parse(r?.result?.value) }; } catch { return {}; }
+  }).catch(() => ({}));
+}
 
 // ── resolving a page target + its execution contexts ─────────────────────────
 async function resolveWorld(pageUrl, { create = true, world: wantWorld = WORLD } = {}) {
@@ -1322,7 +1376,7 @@ try {
     }
     if (SHOT) {
       await pg.send("Page.enable");
-      const shot = await pg.send("Page.captureScreenshot", { format: "png" });
+      const shot = await pg.send("Page.captureScreenshot", { format: "png", ...(await shotClipArgs(pg, ctx?.id, TARGET === "ext" ? "auto" : false)) });
       const b64 = shot && shot.data;
       if (!b64) throw new Error("Page.captureScreenshot returned no data");
       const bytes = Buffer.from(b64, "base64");
@@ -1641,7 +1695,8 @@ try {
       }
       if (step.shot) {
         await pg.send("Page.enable");
-        const shot = await pg.send("Page.captureScreenshot", { format: "png" });
+        const clipArgs = await shotClipArgs(pg, ctx.id, step.clip !== undefined ? step.clip : (where === "ext" ? "auto" : false));
+        const shot = await pg.send("Page.captureScreenshot", { format: "png", ...clipArgs });
         const bytes = shot?.data ? Buffer.from(shot.data, "base64") : null;
         if (!bytes) { console.error("  screenshot failed"); process.exitCode = 1; }
         else {
